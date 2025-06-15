@@ -614,13 +614,9 @@ CameraNode::process(libcamera::Request *const request)
       for (const libcamera::FrameMetadata::Plane &plane : metadata.planes())
         bytesused += plane.bytesused;
 
-      // set time offset once for accurate timing using the device time
-      if (time_offset == 0)
-        time_offset = this->now().nanoseconds() - metadata.timestamp;
-
       // send image data
       std_msgs::msg::Header hdr;
-      hdr.stamp = rclcpp::Time(time_offset + int64_t(metadata.timestamp));
+      hdr.stamp = rclcpp::Time(int64_t(metadata.timestamp));
       hdr.frame_id = frame_id;
       const libcamera::StreamConfiguration &cfg = stream->configuration();
 
