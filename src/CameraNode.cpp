@@ -616,7 +616,7 @@ CameraNode::process(libcamera::Request *const request)
 
       // send image data
       std_msgs::msg::Header hdr;
-      hdr.stamp = this->get_clock()->now();
+      hdr.stamp = rclcpp::Time(int64_t(metadata.timestamp));
       hdr.frame_id = frame_id;
       const libcamera::StreamConfiguration &cfg = stream->configuration();
 
