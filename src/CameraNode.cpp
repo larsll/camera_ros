@@ -615,12 +615,28 @@ CameraNode::process(libcamera::Request *const request)
         bytesused += plane.bytesused;
 
       // set time offset once for accurate timing using the device time
-      if (time_offset == 0)
-        time_offset = this->now().nanoseconds() - metadata.timestamp;
-
+      if (time_offset == 0) {
+        struct timespec ts;
+        if (clock_gettime(CLOCK_BOOTTIME, &ts) == 0) {
+          auto uptime = std::chrono::seconds(ts.tv_sec) + std::chrono::nanoseconds(ts.tv_nsec);
+          if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
+            auto now = std::chrono::seconds(ts.tv_sec) + std::chrono::nanoseconds(ts.tv_nsec);
+            time_offset = (now - uptime).count();
+          } else {
+            RCLCPP_WARN_STREAM(get_logger(), "Failed to get CLOCK_REALTIME, falling back to ROS time");
+            time_offset = this->now().nanoseconds() - metadata.timestamp;
+          }
+        } else {
+          RCLCPP_WARN_STREAM(get_logger(), "Failed to get CLOCK_BOOTTIME, falling back to ROS time");
+          time_offset = this->now().nanoseconds() - metadata.timestamp;
+        }
+      }
       // send image data
       std_msgs::msg::Header hdr;
-      hdr.stamp = rclcpp::Time(time_offset + int64_t(metadata.timestamp));
+      auto frame_time = time_offset + int64_t(metadata.timestamp);
+      auto latency = this->now().nanoseconds() - frame_time;
+      hdr.stamp = rclcpp::Time(frame_time);
+      RCLCPP_INFO_STREAM(get_logger(), "offset: " << std::to_string(time_offset) << " ns, frame_time: " << std::to_string(frame_time) << " ns, latency: " << std::to_string(latency) << " ns");
       hdr.frame_id = frame_id;
       const libcamera::StreamConfiguration &cfg = stream->configuration();
 
