@@ -615,28 +615,38 @@ CameraNode::process(libcamera::Request *const request)
         bytesused += plane.bytesused;
 
       // set time offset once for accurate timing using the device time
-      if (time_offset == 0) {
-        struct timespec ts;
-        if (clock_gettime(CLOCK_BOOTTIME, &ts) == 0) {
-          auto uptime = std::chrono::seconds(ts.tv_sec) + std::chrono::nanoseconds(ts.tv_nsec);
-          if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
-            auto now = std::chrono::seconds(ts.tv_sec) + std::chrono::nanoseconds(ts.tv_nsec);
+      const libcamera::ControlList &req_metadata = request->metadata();
+      rclcpp::Time frame_time;
+      auto sensor_ts = req_metadata.get(libcamera::controls::SensorTimestamp);
+      if (sensor_ts) {
+        if (time_offset == 0) {
+          struct timespec ts_boottime, ts_realtime;
+          if (clock_gettime(CLOCK_BOOTTIME, &ts_boottime) == 0 &&
+              clock_gettime(CLOCK_REALTIME, &ts_realtime) == 0) {
+            auto uptime = std::chrono::seconds(ts_boottime.tv_sec) + std::chrono::nanoseconds(ts_boottime.tv_nsec);
+            auto now = std::chrono::seconds(ts_realtime.tv_sec) + std::chrono::nanoseconds(ts_realtime.tv_nsec);
             time_offset = (now - uptime).count();
-          } else {
-            RCLCPP_WARN_STREAM(get_logger(), "Failed to get CLOCK_REALTIME, falling back to ROS time");
-            time_offset = this->now().nanoseconds() - metadata.timestamp;
           }
-        } else {
-          RCLCPP_WARN_STREAM(get_logger(), "Failed to get CLOCK_BOOTTIME, falling back to ROS time");
-          time_offset = this->now().nanoseconds() - metadata.timestamp;
+          else {
+            RCLCPP_WARN_STREAM(get_logger(), "Failed to get CLOCK_BOOTTIME or CLOCK_REALTIME, falling back to ROS time as reference");
+            time_offset = this->now().nanoseconds() - sensor_ts.value();
+          }
         }
+        frame_time = rclcpp::Time(req_metadata.get(libcamera::controls::SensorTimestamp).value() + time_offset);
       }
+      else {
+        frame_time = this->now();
+      }
+      RCLCPP_DEBUG_STREAM(
+        get_logger(),
+        "offset: " << std::to_string(time_offset) << " ns, frame_time: "
+           << std::to_string(frame_time.nanoseconds()) << " ns, latency: "
+           << std::to_string(this->now().nanoseconds() - (sensor_ts.value() + time_offset))
+           << " ns");
+
       // send image data
       std_msgs::msg::Header hdr;
-      auto frame_time = time_offset + int64_t(metadata.timestamp);
-      auto latency = this->now().nanoseconds() - frame_time;
-      hdr.stamp = rclcpp::Time(frame_time);
-      RCLCPP_INFO_STREAM(get_logger(), "offset: " << std::to_string(time_offset) << " ns, frame_time: " << std::to_string(frame_time) << " ns, latency: " << std::to_string(latency) << " ns");
+      hdr.stamp = frame_time;
       hdr.frame_id = frame_id;
       const libcamera::StreamConfiguration &cfg = stream->configuration();
 
