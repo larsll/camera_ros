@@ -663,7 +663,7 @@ CameraNode::process(libcamera::Request *const request)
       if (timestamp_source == TimestampSource::SENSOR_TIMESTAMP) {
         auto sensor_ts = req_metadata.get(libcamera::controls::SensorTimestamp);
         if (sensor_ts) {
-          frame_time = rclcpp::Time(req_metadata.get(libcamera::controls::SensorTimestamp).value() + boot_time);
+          frame_time = rclcpp::Time(sensor_ts.value() + boot_time);
         }
         else {
           RCLCPP_WARN_STREAM(get_logger(), "sensor timestamp not available, falling back to node time as reference");
