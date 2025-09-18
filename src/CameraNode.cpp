@@ -247,7 +247,19 @@ compressImageMsg(const sensor_msgs::msg::Image &source,
 
 CameraNode::CameraNode(const rclcpp::NodeOptions &options)
     : Node("camera", options),
+#if CIM_HAS_NODE_INTERFACE
+      cim(
+        this->get_node_base_interface(),
+        this->get_node_services_interface(),
+        this->get_node_logging_interface()
+#if CIM_HAS_QoS
+          ,
+        "camera", {}, rclcpp::SystemDefaultsQoS()
+#endif
+          ),
+#else
       cim(this),
+#endif
       parameter_handler(this),
       param_cb_change(
 #ifdef RCLCPP_HAS_PARAM_EXT_CB
@@ -662,23 +674,9 @@ CameraNode::process(libcamera::Request *const request)
       for (const libcamera::FrameMetadata::Plane &plane : metadata.planes())
         bytesused += plane.bytesused;
 
-      // determine the time added to the image message header
-      const libcamera::ControlList &req_metadata = request->metadata();
-      rclcpp::Time frame_time;
-      if (timestamp_source == TimestampSource::SENSOR_TIMESTAMP) {
-        auto sensor_ts = req_metadata.get(libcamera::controls::SensorTimestamp);
-        if (sensor_ts) {
-          frame_time = rclcpp::Time(sensor_ts.value() + boot_time);
-        }
-        else {
-          RCLCPP_WARN_STREAM(get_logger(), "sensor timestamp not available, falling back to node time as reference");
-          timestamp_source = TimestampSource::NODE;
-          frame_time = this->now();
-        }
-      }
-      else {
-        frame_time = this->now();
-      }
+      // set time offset once for accurate timing using the device time
+      if (time_offset == 0)
+        time_offset = this->now().nanoseconds() - metadata.timestamp;
 
       if (metadata.sequence > 0) {
         assert(metadata.sequence > last_sequence);
