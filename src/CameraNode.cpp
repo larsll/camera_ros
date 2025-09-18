@@ -353,7 +353,7 @@ CameraNode::CameraNode(const rclcpp::NodeOptions &options)
     "timestamp_source", "sensor", param_descr_timestamp_source));
   if (timestamp_source == TimestampSource::SENSOR_TIMESTAMP) {
     struct timespec ts_boottime;
-    if (clock_gettime(CLOCK_BOOTTIME, &ts_boottime) == 0) {
+    if (clock_gettime(CLOCK_MONOTONIC, &ts_boottime) == 0) {
       auto uptime = std::chrono::seconds(ts_boottime.tv_sec) + std::chrono::nanoseconds(ts_boottime.tv_nsec);
       boot_time = this->now().nanoseconds() - std::chrono::duration_cast<std::chrono::nanoseconds>(uptime).count();
     }
@@ -674,9 +674,23 @@ CameraNode::process(libcamera::Request *const request)
       for (const libcamera::FrameMetadata::Plane &plane : metadata.planes())
         bytesused += plane.bytesused;
 
-      // set time offset once for accurate timing using the device time
-      if (time_offset == 0)
-        time_offset = this->now().nanoseconds() - metadata.timestamp;
+      // determine the time added to the image message header
+      const libcamera::ControlList &req_metadata = request->metadata();
+      rclcpp::Time frame_time;
+      if (timestamp_source == TimestampSource::SENSOR_TIMESTAMP) {
+        auto sensor_ts = req_metadata.get(libcamera::controls::SensorTimestamp);
+        if (sensor_ts) {
+          frame_time = rclcpp::Time(sensor_ts.value() + boot_time);
+        }
+        else {
+          RCLCPP_WARN_STREAM(get_logger(), "sensor timestamp not available, falling back to node time as reference");
+          timestamp_source = TimestampSource::NODE;
+          frame_time = this->now();
+        }
+      }
+      else {
+        frame_time = this->now();
+      }
 
       if (metadata.sequence > 0) {
         assert(metadata.sequence > last_sequence);
