@@ -75,12 +75,6 @@ class CameraNode : public rclcpp::Node
 public:
   explicit CameraNode(const rclcpp::NodeOptions &options);
 
-  enum class TimestampSource
-  {
-    SENSOR_TIMESTAMP,
-    NODE
-  };
-
   ~CameraNode();
 
 private:
@@ -103,9 +97,7 @@ private:
 
   // timestamp offset (ns) from camera time to system time
   int64_t boot_time = 0;
-  TimestampSource timestamp_source;
-  std::atomic<unsigned int> last_sequence = 0;
-  std::atomic<uint64_t> last_timestamp = 0;
+  bool use_node_time;
 
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_image;
   rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr pub_image_compressed;
@@ -190,22 +182,6 @@ get_sensor_format(const std::string &format_str)
 
   // Throw exception as it was not possible to parse the format string
   throw std::runtime_error("Invalid sensor_mode. Expected [width]:[height] but got " + format_str);
-}
-
-camera::CameraNode::TimestampSource
-get_timestamp_source(const std::string &str)
-{
-  static const std::unordered_map<std::string, camera::CameraNode::TimestampSource> source_map = {
-    {"sensor", camera::CameraNode::TimestampSource::SENSOR_TIMESTAMP},
-    {"node", camera::CameraNode::TimestampSource::NODE},
-  };
-
-  try {
-    return source_map.at(str);
-  }
-  catch (const std::out_of_range &) {
-    throw std::runtime_error("invalid timestamp_source: " + str);
-  }
 }
 
 // The following function "compressImageMsg" is adapted from "CvImage::toCompressedImageMsg"
@@ -344,14 +320,12 @@ CameraNode::CameraNode(const rclcpp::NodeOptions &options)
     jpeg_quality = declare_parameter<uint8_t>("jpeg_quality", 95, jpeg_quality_description);
   }
 
-  // timestamp_source parameter
-  rcl_interfaces::msg::ParameterDescriptor param_descr_timestamp_source;
-  param_descr_timestamp_source.description = "source of timestamp for image messages";
-  param_descr_timestamp_source.additional_constraints = "one of {sensor, node}";
-  param_descr_timestamp_source.read_only = true;
-  timestamp_source = get_timestamp_source(declare_parameter<std::string>(
-    "timestamp_source", "sensor", param_descr_timestamp_source));
-  if (timestamp_source == TimestampSource::SENSOR_TIMESTAMP) {
+  // use_node_time parameter
+  rcl_interfaces::msg::ParameterDescriptor param_descr_use_node_time;
+  param_descr_use_node_time.description = "use node time instead of sensor timestamp for image messages";
+  param_descr_use_node_time.read_only = true;
+  use_node_time = declare_parameter<bool>("use_node_time", false, param_descr_use_node_time);
+  if (!use_node_time) {
     struct timespec ts_boottime;
     if (clock_gettime(CLOCK_MONOTONIC, &ts_boottime) == 0) {
       auto uptime = std::chrono::seconds(ts_boottime.tv_sec) + std::chrono::nanoseconds(ts_boottime.tv_nsec);
@@ -674,38 +648,23 @@ CameraNode::process(libcamera::Request *const request)
       for (const libcamera::FrameMetadata::Plane &plane : metadata.planes())
         bytesused += plane.bytesused;
 
-      // determine the time added to the image message header
-      const libcamera::ControlList &req_metadata = request->metadata();
-      rclcpp::Time frame_time;
-      if (timestamp_source == TimestampSource::SENSOR_TIMESTAMP) {
-        auto sensor_ts = req_metadata.get(libcamera::controls::SensorTimestamp);
-        if (sensor_ts) {
-          frame_time = rclcpp::Time(sensor_ts.value() + boot_time);
+      // prepare message header
+      std_msgs::msg::Header hdr;
+      hdr.frame_id = frame_id;
+      hdr.stamp = this->now();
+
+      // if using sensor timestamps, get the sensor timestamp from the request metadata
+      if (!use_node_time) {
+        const libcamera::ControlList &req_metadata = request->metadata();
+        if (const std::optional<int64_t> sensor_ts = req_metadata.get(libcamera::controls::SensorTimestamp)) {
+          hdr.stamp = rclcpp::Time(sensor_ts.value() + boot_time);
         }
         else {
-          RCLCPP_WARN_STREAM(get_logger(), "sensor timestamp not available, falling back to node time as reference");
-          timestamp_source = TimestampSource::NODE;
-          frame_time = this->now();
+          RCLCPP_WARN_STREAM_ONCE(get_logger(), "sensor timestamp not available, falling back to node time as reference");
         }
       }
-      else {
-        frame_time = this->now();
-      }
 
-      if (metadata.sequence > 0) {
-        assert(metadata.sequence > last_sequence);
-        const unsigned int dropped_frames = (metadata.sequence - last_sequence) - 1;
-        if (dropped_frames)
-          RCLCPP_WARN_STREAM(get_logger(), "Dropped " << dropped_frames << " frames! Last frame was " << (metadata.timestamp - last_timestamp) * 1e-6 << " ms ago.");
-      }
-
-      last_sequence = metadata.sequence;
-      last_timestamp = metadata.timestamp;
-
-      // send image data
-      std_msgs::msg::Header hdr;
-      hdr.stamp = frame_time;
-      hdr.frame_id = frame_id;
+      // prepare image messages
       const libcamera::StreamConfiguration &cfg = stream->configuration();
 
       auto msg_img = std::make_unique<sensor_msgs::msg::Image>();
