@@ -664,6 +664,9 @@ CameraNode::process(libcamera::Request *const request)
         }
       }
 
+      RCLCPP_INFO_STREAM(get_logger(), "sensor timestamp: " << std::to_string(rclcpp::Time(hdr.stamp).nanoseconds()) << " ns, latency: "
+                                                            << std::to_string((rclcpp::Clock(RCL_SYSTEM_TIME).now() - rclcpp::Time(hdr.stamp)).nanoseconds() / 1000) + " us");
+
       // prepare image messages
       const libcamera::StreamConfiguration &cfg = stream->configuration();
 
