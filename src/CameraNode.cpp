@@ -95,8 +95,6 @@ private:
   };
   std::unordered_map<const libcamera::FrameBuffer *, buffer_info_t> buffer_info;
 
-  // timestamp offset (ns) from camera time to system time
-  int64_t boot_time = 0;
   bool use_node_time;
 
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_image;
@@ -325,16 +323,6 @@ CameraNode::CameraNode(const rclcpp::NodeOptions &options)
   param_descr_use_node_time.description = "use node time instead of sensor timestamp for image messages";
   param_descr_use_node_time.read_only = true;
   use_node_time = declare_parameter<bool>("use_node_time", false, param_descr_use_node_time);
-  if (!use_node_time) {
-    struct timespec ts_boottime;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts_boottime) == 0) {
-      auto uptime = std::chrono::seconds(ts_boottime.tv_sec) + std::chrono::nanoseconds(ts_boottime.tv_nsec);
-      boot_time = this->now().nanoseconds() - std::chrono::duration_cast<std::chrono::nanoseconds>(uptime).count();
-    }
-    else {
-      throw std::runtime_error("getting time failed: " + std::string(std::strerror(errno)));
-    }
-  }
 
   // publisher for raw and compressed image
   pub_image = this->create_publisher<sensor_msgs::msg::Image>("~/image_raw", 1);
@@ -651,22 +639,22 @@ CameraNode::process(libcamera::Request *const request)
       // prepare message header
       std_msgs::msg::Header hdr;
       hdr.frame_id = frame_id;
-      hdr.stamp = this->now();
 
       // if using sensor timestamps, get the sensor timestamp from the request metadata
+      int64_t sensor_latency = 0;
       if (!use_node_time) {
         const libcamera::ControlList &req_metadata = request->metadata();
         if (const std::optional<int64_t> sensor_ts = req_metadata.get(libcamera::controls::SensorTimestamp)) {
-          hdr.stamp = rclcpp::Time(sensor_ts.value() + boot_time);
+          sensor_latency = rclcpp::Clock(RCL_STEADY_TIME).now().nanoseconds() - sensor_ts.value();
         }
         else {
           RCLCPP_WARN_STREAM_ONCE(get_logger(), "sensor timestamp not available, falling back to node time as reference");
         }
       }
 
-      RCLCPP_INFO_STREAM(get_logger(), "sensor timestamp: " << std::to_string(rclcpp::Time(hdr.stamp).nanoseconds()) << " ns, latency: "
-                        << std::to_string((rclcpp::Clock(RCL_SYSTEM_TIME).now() - rclcpp::Time(hdr.stamp, RCL_SYSTEM_TIME)).nanoseconds() / 1000) << " us"
-                        << ", node time diff: " << std::to_string((this->now() - hdr.stamp).nanoseconds() / 1000) << " us");
+      // Adjust timestamp by the sensor latency
+      hdr.stamp = this->now() - rclcpp::Duration::from_nanoseconds(sensor_latency);
+      RCLCPP_INFO_STREAM_THROTTLE(get_logger(), *get_clock(), 1000, "sensor timestamp: " << std::to_string(rclcpp::Time(hdr.stamp).nanoseconds()) << " ns, latency: " << std::to_string((rclcpp::Clock(RCL_SYSTEM_TIME).now() - rclcpp::Time(hdr.stamp, RCL_SYSTEM_TIME)).nanoseconds() / 1000) << " us");
 
       // prepare image messages
       const libcamera::StreamConfiguration &cfg = stream->configuration();
