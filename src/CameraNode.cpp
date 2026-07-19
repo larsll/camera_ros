@@ -610,7 +610,7 @@ CameraNode::CameraNode(const rclcpp::NodeOptions &options)
 
 CameraNode::~CameraNode()
 {
-  camera->disconnected.disconnect(this);
+  camera->disconnected.disconnect(this, &CameraNode::onDisconnect);
 
   // stop request callbacks
   camera->requestCompleted.disconnect(this, &CameraNode::requestComplete);
