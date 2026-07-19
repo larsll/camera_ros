@@ -797,9 +797,6 @@ CameraNode::process(libcamera::Request *const request)
 
     pub_diagnostics->publish(diagnostic_array);
 
-    if (request->status() == libcamera::Request::RequestCancelled)
-      continue;
-
     // redeclare implicitly undeclared parameters
     parameter_handler.redeclare();
 
@@ -814,6 +811,10 @@ CameraNode::process(libcamera::Request *const request)
 
     if (const int ret = camera->queueRequest(request); ret < 0) {
       RCLCPP_WARN_STREAM(get_logger(), "failed to queue request (" << request->toString() << "): " << strerror(-ret));
+      if (ret == -ENODEV || ret == -EACCES) {
+        running = false;
+        return;
+      }
     }
 
     if (!parameter_handler.sync_control_values(request->controls())) {
