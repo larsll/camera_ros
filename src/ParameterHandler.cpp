@@ -71,9 +71,6 @@ ParameterHandler::declare(const libcamera::ControlInfoMap &controls)
   // to unset them (set their type to 'rclcpp::ParameterType::PARAMETER_NOT_SET').
   // Unsetting a statically typed parameter causes "cannot undeclare a statically typed parameter".
 
-  camera_controls.clear();
-  parameter_descriptors.clear();
-
   if (controls.empty()) {
     RCLCPP_DEBUG_STREAM(node->get_logger(), "No controls to declare.");
     return;
@@ -172,10 +169,8 @@ ParameterHandler::declare(const libcamera::ControlInfoMap &controls)
     camera_controls.emplace(id->name(), control_info_t {.id = id, .info = info});
 
     // declare parameters without default values, types and overrides to avoid triggering the callbacks
-    if (!node->has_parameter(id->name())) {
-      RCLCPP_DEBUG_STREAM(node->get_logger(), "declare '" << id->name() << "' (type: " << pv_type << ")");
-      node->declare_parameter(id->name(), rclcpp::ParameterValue {}, descriptor, true);
-    }
+    RCLCPP_DEBUG_STREAM(node->get_logger(), "declare '" << id->name() << "' (type: " << pv_type << ")");
+    node->declare_parameter(id->name(), rclcpp::ParameterValue {}, descriptor, true);
   }
 
   // resolve conflicts in default configuration
