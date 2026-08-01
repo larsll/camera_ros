@@ -874,52 +874,56 @@ CameraNode::process(libcamera::Request *const request)
       for (const libcamera::FrameMetadata::Plane &plane : metadata.planes())
         bytesused += plane.bytesused;
 
-      if (bytesused == 0) {
-        diagnostic_status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
-        RCLCPP_WARN_STREAM(get_logger(), "request '" << request->toString() << "' completed with empty buffer");
-      }
-      else {
-        // prepare image messages
-        const libcamera::StreamConfiguration &cfg = stream->configuration();
+      // prepare image messages
+      const libcamera::StreamConfiguration &cfg = stream->configuration();
 
-        auto msg_img = std::make_unique<sensor_msgs::msg::Image>();
-        auto msg_img_compressed = std::make_unique<sensor_msgs::msg::CompressedImage>();
+      auto msg_img = std::make_unique<sensor_msgs::msg::Image>();
+      auto msg_img_compressed = std::make_unique<sensor_msgs::msg::CompressedImage>();
 
-        if (format_type(cfg.pixelFormat) == FormatType::RAW) {
-          // raw uncompressed image
-          assert(buffer_info[buffer].size == bytesused);
-          msg_img->header = hdr;
-          msg_img->width = cfg.size.width;
-          msg_img->height = cfg.size.height;
-          msg_img->step = cfg.stride;
-          msg_img->encoding = get_ros_encoding(cfg.pixelFormat);
-          msg_img->is_bigendian = (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__);
-          msg_img->data.resize(buffer_info[buffer].size);
-          memcpy(msg_img->data.data(), buffer_info[buffer].data, buffer_info[buffer].size);
+      if (format_type(cfg.pixelFormat) == FormatType::RAW) {
+        // raw uncompressed image
+        assert(buffer_info[buffer].size == bytesused);
+        msg_img->header = hdr;
+        msg_img->width = cfg.size.width;
+        msg_img->height = cfg.size.height;
+        msg_img->step = cfg.stride;
+        msg_img->encoding = get_ros_encoding(cfg.pixelFormat);
+        msg_img->is_bigendian = (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__);
+        msg_img->data.resize(buffer_info[buffer].size);
+        memcpy(msg_img->data.data(), buffer_info[buffer].data, buffer_info[buffer].size);
 
-          // compress to jpeg
-          if (pub_image_compressed->get_subscription_count()) {
-            try {
-              compressImageMsg(*msg_img, *msg_img_compressed,
-                               {cv::IMWRITE_JPEG_QUALITY, jpeg_quality});
-            }
-            catch (const cv_bridge::Exception &e) {
-              RCLCPP_ERROR_STREAM(get_logger(), e.what());
-            }
+        // compress to jpeg
+        if (pub_image_compressed->get_subscription_count()) {
+          try {
+            compressImageMsg(*msg_img, *msg_img_compressed,
+                             {cv::IMWRITE_JPEG_QUALITY, jpeg_quality});
+          }
+          catch (const cv_bridge::Exception &e) {
+            RCLCPP_ERROR_STREAM(get_logger(), e.what());
           }
         }
-        else if (format_type(cfg.pixelFormat) == FormatType::COMPRESSED) {
-          // compressed image
-          assert(bytesused < buffer_info[buffer].size);
-          msg_img_compressed->header = hdr;
-          msg_img_compressed->format = get_ros_encoding(cfg.pixelFormat);
-          msg_img_compressed->data.resize(bytesused);
-          memcpy(msg_img_compressed->data.data(), buffer_info[buffer].data, bytesused);
+      }
+      else if (format_type(cfg.pixelFormat) == FormatType::COMPRESSED) {
+        // compressed image
+        assert(bytesused < buffer_info[buffer].size);
+        msg_img_compressed->header = hdr;
+        msg_img_compressed->format = get_ros_encoding(cfg.pixelFormat);
+        msg_img_compressed->data.resize(bytesused);
+        memcpy(msg_img_compressed->data.data(), buffer_info[buffer].data, bytesused);
 
-          // decompress into raw rgb8 image
-          if (pub_image->get_subscription_count()) {
+        // decompress into raw rgb8 image
+        if (pub_image->get_subscription_count()) {
+          if (msg_img_compressed->data.empty()) {
+            diagnostic_status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+            RCLCPP_WARN_STREAM(get_logger(), "request '" << request->toString() << "' completed with empty compressed buffer");
+          }
+          else {
             try {
               cv_bridge::toCvCopy(*msg_img_compressed, "rgb8")->toImageMsg(*msg_img);
+            }
+            catch (const cv_bridge::Exception &e) {
+              diagnostic_status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+              RCLCPP_WARN_STREAM(get_logger(), e.what());
             }
             catch (const cv::Exception &e) {
               diagnostic_status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
@@ -927,18 +931,18 @@ CameraNode::process(libcamera::Request *const request)
             }
           }
         }
-        else {
-          throw std::runtime_error("unsupported pixel format: " +
-                                   stream->configuration().pixelFormat.toString());
-        }
-
-        pub_image->publish(std::move(msg_img));
-        pub_image_compressed->publish(std::move(msg_img_compressed));
-
-        sensor_msgs::msg::CameraInfo ci = cim.getCameraInfo();
-        ci.header = hdr;
-        pub_ci->publish(ci);
       }
+      else {
+        throw std::runtime_error("unsupported pixel format: " +
+                                 stream->configuration().pixelFormat.toString());
+      }
+
+      pub_image->publish(std::move(msg_img));
+      pub_image_compressed->publish(std::move(msg_img_compressed));
+
+      sensor_msgs::msg::CameraInfo ci = cim.getCameraInfo();
+      ci.header = hdr;
+      pub_ci->publish(ci);
     }
     else if (request->status() == libcamera::Request::RequestCancelled) {
       diagnostic_status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
