@@ -345,7 +345,7 @@ CameraNode::CameraNode(const rclcpp::NodeOptions &options)
   constexpr int orientation_angle_default = 0;
   const int angle = declare_parameter<int>("orientation", orientation_angle_default, param_descr_orientation);
 #if LIBCAMERA_VER_GE(0, 2, 0)
-  startup_params.orientation = libcamera::orientationFromRotation(angle);
+  camera_const_parameters.orientation = libcamera::orientationFromRotation(angle);
 #else
   if (angle != orientation_angle_default) {
     RCLCPP_WARN_STREAM(get_logger(), "parameter 'orientation' not supported on libcamera " << LIBCAMERA_VERSION_MAJOR << "." << LIBCAMERA_VERSION_MINOR);
@@ -423,7 +423,7 @@ CameraNode::startCamera()
   const libcamera::Size &size = camera_const_parameters.size;
   const libcamera::Size &sensor_size = camera_const_parameters.sensor_size;
 #if LIBCAMERA_VER_GE(0, 2, 0)
-  const libcamera::Orientation &orientation = startup_params.orientation;
+  const libcamera::Orientation &orientation = camera_const_parameters.orientation;
 #endif
   const rclcpp::ParameterValue &camera_id = camera_const_parameters.camera_id;
 
