@@ -106,7 +106,7 @@ private:
 
   // camera parameters read once at start-up (all "read_only") and reused on
   // every (re-)start, avoiding repeated parameter server look-ups
-  struct camera_const_params_t
+  struct camera_const_parameters_t
   {
     std::string format;
     libcamera::StreamRole role;
