@@ -103,11 +103,10 @@ private:
   std::unordered_map<const libcamera::FrameBuffer *, buffer_info_t> buffer_info;
 
   bool use_node_time;
-  std::string camera_hardware_id;
 
   // camera parameters read once at start-up (all "read_only") and reused on
   // every (re-)start, avoiding repeated parameter server look-ups
-  struct startup_parameters_t
+  struct camera_const_params_t
   {
     std::string format;
     libcamera::StreamRole role;
@@ -118,8 +117,11 @@ private:
 #endif
     rclcpp::ParameterValue camera_id;
     std::string camera_info_url;
+    // hardware ID of the active camera; empty until the first successful
+    // start, then kept across disconnects to match the same physical camera
+    std::string camera_hardware_id;
   };
-  startup_parameters_t startup_params;
+  camera_const_parameters_t camera_const_parameters;
 
   static const rclcpp::PublisherOptionsWithAllocator<std::allocator<void>> pubopts;
 
@@ -304,14 +306,14 @@ CameraNode::CameraNode(const rclcpp::NodeOptions &options)
   rcl_interfaces::msg::ParameterDescriptor param_descr_format;
   param_descr_format.description = "pixel format of streaming buffer";
   param_descr_format.read_only = true;
-  startup_params.format = declare_parameter<std::string>("format", {}, param_descr_format);
+  camera_const_parameters.format = declare_parameter<std::string>("format", {}, param_descr_format);
 
   // stream role
   rcl_interfaces::msg::ParameterDescriptor param_descr_role;
   param_descr_role.description = "stream role";
   param_descr_role.additional_constraints = "one of {raw, still, video, viewfinder}";
   param_descr_role.read_only = true;
-  startup_params.role =
+  camera_const_parameters.role =
     get_role(declare_parameter<std::string>("role", "viewfinder", param_descr_role));
 
   // image dimensions
@@ -319,14 +321,14 @@ CameraNode::CameraNode(const rclcpp::NodeOptions &options)
   param_descr_ro.read_only = true;
   const uint32_t w = declare_parameter<int64_t>("width", {}, param_descr_ro);
   const uint32_t h = declare_parameter<int64_t>("height", {}, param_descr_ro);
-  startup_params.size = {w, h};
+  camera_const_parameters.size = {w, h};
 
   // Raw format dimensions
   rcl_interfaces::msg::ParameterDescriptor param_descr_sensor_mode;
   param_descr_sensor_mode.description = "raw mode of the sensor";
   param_descr_sensor_mode.additional_constraints = "string in format [width]:[height]";
   param_descr_sensor_mode.read_only = true;
-  startup_params.sensor_size =
+  camera_const_parameters.sensor_size =
     get_sensor_format(declare_parameter<std::string>("sensor_mode", {}, param_descr_sensor_mode));
 
   // camera frame_id
@@ -354,16 +356,16 @@ CameraNode::CameraNode(const rclcpp::NodeOptions &options)
   rcl_interfaces::msg::ParameterDescriptor param_descr_camera_info_url;
   param_descr_camera_info_url.description = "camera calibration info file url";
   param_descr_camera_info_url.read_only = true;
-  startup_params.camera_info_url =
+  camera_const_parameters.camera_info_url =
     declare_parameter<std::string>("camera_info_url", {}, param_descr_camera_info_url);
 
   // camera ID
-  startup_params.camera_id =
+  camera_const_parameters.camera_id =
     declare_parameter("camera", rclcpp::ParameterValue {}, param_descr_ro.set__dynamic_typing(true));
 
   // we cannot control the compression rate of the libcamera MJPEG stream
   // ignore "jpeg_quality" parameter for MJPEG streams
-  if (libcamera::PixelFormat::fromString(startup_params.format) != libcamera::formats::MJPEG) {
+  if (libcamera::PixelFormat::fromString(camera_const_parameters.format) != libcamera::formats::MJPEG) {
     rcl_interfaces::msg::ParameterDescriptor jpeg_quality_description;
     jpeg_quality_description.name = "jpeg_quality";
     jpeg_quality_description.type = rcl_interfaces::msg::ParameterType::PARAMETER_INTEGER;
@@ -416,22 +418,22 @@ CameraNode::startCamera()
   if (camera)
     return;
 
-  const std::string &format = startup_params.format;
-  const libcamera::StreamRole &role = startup_params.role;
-  const libcamera::Size &size = startup_params.size;
-  const libcamera::Size &sensor_size = startup_params.sensor_size;
+  const std::string &format = camera_const_parameters.format;
+  const libcamera::StreamRole &role = camera_const_parameters.role;
+  const libcamera::Size &size = camera_const_parameters.size;
+  const libcamera::Size &sensor_size = camera_const_parameters.sensor_size;
 #if LIBCAMERA_VER_GE(0, 2, 0)
   const libcamera::Orientation &orientation = startup_params.orientation;
 #endif
-  const rclcpp::ParameterValue &camera_id = startup_params.camera_id;
+  const rclcpp::ParameterValue &camera_id = camera_const_parameters.camera_id;
 
   // get the camera
-  if (!camera_hardware_id.empty()) {
+  if (!camera_const_parameters.camera_hardware_id.empty()) {
     // reconnect: find the same physical camera by its hardware ID
-    camera = camera_manager.get(camera_hardware_id);
+    camera = camera_manager.get(camera_const_parameters.camera_hardware_id);
     if (!camera) {
       RCLCPP_INFO_STREAM(get_logger(), camera_manager);
-      throw std::runtime_error("camera '" + camera_hardware_id + "' not found");
+      throw std::runtime_error("camera '" + camera_const_parameters.camera_hardware_id + "' not found");
     }
   }
   else if (camera_id.get_type() == rclcpp::ParameterType::PARAMETER_NOT_SET) {
@@ -604,7 +606,7 @@ CameraNode::startCamera()
   if (!cim.setCameraName(cname))
     throw std::runtime_error("camera name must only contain alphanumeric characters");
 
-  const std::string &camera_info_url = startup_params.camera_info_url;
+  const std::string &camera_info_url = camera_const_parameters.camera_info_url;
   if (!cim.loadCameraInfo(camera_info_url)) {
     if (!camera_info_url.empty()) {
       RCLCPP_WARN_STREAM(get_logger(), "failed to load camera calibration info from provided URL, using default URL");
@@ -613,8 +615,8 @@ CameraNode::startCamera()
   }
 
   // first connection: store camera hardware ID and declare controls as parameters
-  if (camera_hardware_id.empty()) {
-    camera_hardware_id = camera->id();
+  if (camera_const_parameters.camera_hardware_id.empty()) {
+    camera_const_parameters.camera_hardware_id = camera->id();
     parameter_handler.declare(camera->controls());
   }
 
@@ -703,7 +705,7 @@ CameraNode::onDisconnect()
   running = false;
   camera_disconnected = true;
 
-  RCLCPP_ERROR_STREAM(get_logger(), "camera '" << camera_hardware_id << "' disconnected!");
+  RCLCPP_ERROR_STREAM(get_logger(), "camera '" << camera_const_parameters.camera_hardware_id << "' disconnected!");
 
   if (pub_diagnostics->get_subscription_count()) {
     diagnostic_msgs::msg::DiagnosticArray diagnostic_array;
@@ -711,7 +713,7 @@ CameraNode::onDisconnect()
     diagnostic_array.header.frame_id = frame_id;
 
     diagnostic_msgs::msg::DiagnosticStatus diagnostic_status;
-    diagnostic_status.hardware_id = camera_hardware_id;
+    diagnostic_status.hardware_id = camera_const_parameters.camera_hardware_id;
     diagnostic_status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     diagnostic_status.message = "camera disconnected";
 
@@ -725,12 +727,12 @@ CameraNode::onCameraAdded(std::shared_ptr<libcamera::Camera> added_camera)
 {
   // runs on libcamera's signal-callback thread: only flag the event; the
   // executor-thread timer performs the actual restart
-  if (camera_hardware_id.empty())
+  if (camera_const_parameters.camera_hardware_id.empty())
     return;
 
   // only reconnect the same physical camera that was previously active
-  if (added_camera->id() != camera_hardware_id) {
-    RCLCPP_WARN_STREAM(get_logger(), "camera '" << added_camera->id() << "' added, ignoring as waiting for '" << camera_hardware_id << "'");
+  if (added_camera->id() != camera_const_parameters.camera_hardware_id) {
+    RCLCPP_WARN_STREAM(get_logger(), "camera '" << added_camera->id() << "' added, ignoring as waiting for '" << camera_const_parameters.camera_hardware_id << "'");
     return;
   }
 
@@ -746,7 +748,7 @@ CameraNode::onReconnectTimer()
     stopCamera(true);
 
   if (!camera && reconnect_requested.exchange(false)) {
-    RCLCPP_INFO_STREAM(get_logger(), "camera '" << camera_hardware_id << "' reconnected");
+    RCLCPP_INFO_STREAM(get_logger(), "camera '" << camera_const_parameters.camera_hardware_id << "' reconnected");
     try {
       startCamera();
 
@@ -756,7 +758,7 @@ CameraNode::onReconnectTimer()
         diagnostic_array.header.frame_id = frame_id;
 
         diagnostic_msgs::msg::DiagnosticStatus diagnostic_status;
-        diagnostic_status.hardware_id = camera_hardware_id;
+        diagnostic_status.hardware_id = camera_const_parameters.camera_hardware_id;
         diagnostic_status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
         diagnostic_status.message = "camera reconnected";
 
@@ -873,7 +875,7 @@ CameraNode::process(libcamera::Request *const request)
     diagnostic_array.header = hdr;
 
     diagnostic_msgs::msg::DiagnosticStatus diagnostic_status;
-    diagnostic_status.hardware_id = camera_hardware_id;
+    diagnostic_status.hardware_id = camera_const_parameters.camera_hardware_id;
 
     if (request->status() == libcamera::Request::RequestComplete) {
       assert(request->buffers().size() == 1);
