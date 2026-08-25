@@ -105,6 +105,22 @@ private:
   bool use_node_time;
   std::string camera_hardware_id;
 
+  // camera parameters read once at start-up (all "read_only") and reused on
+  // every (re-)start, avoiding repeated parameter server look-ups
+  struct startup_parameters_t
+  {
+    std::string format;
+    libcamera::StreamRole role;
+    libcamera::Size size;
+    libcamera::Size sensor_size;
+#if LIBCAMERA_VER_GE(0, 2, 0)
+    libcamera::Orientation orientation;
+#endif
+    rclcpp::ParameterValue camera_id;
+    std::string camera_info_url;
+  };
+  startup_parameters_t startup_params;
+
   static const rclcpp::PublisherOptionsWithAllocator<std::allocator<void>> pubopts;
 
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_image;
@@ -288,27 +304,30 @@ CameraNode::CameraNode(const rclcpp::NodeOptions &options)
   rcl_interfaces::msg::ParameterDescriptor param_descr_format;
   param_descr_format.description = "pixel format of streaming buffer";
   param_descr_format.read_only = true;
-  const std::string &format = declare_parameter<std::string>("format", {}, param_descr_format);
+  startup_params.format = declare_parameter<std::string>("format", {}, param_descr_format);
 
   // stream role
   rcl_interfaces::msg::ParameterDescriptor param_descr_role;
   param_descr_role.description = "stream role";
   param_descr_role.additional_constraints = "one of {raw, still, video, viewfinder}";
   param_descr_role.read_only = true;
-  declare_parameter<std::string>("role", "viewfinder", param_descr_role);
+  startup_params.role =
+    get_role(declare_parameter<std::string>("role", "viewfinder", param_descr_role));
 
   // image dimensions
   rcl_interfaces::msg::ParameterDescriptor param_descr_ro;
   param_descr_ro.read_only = true;
-  declare_parameter<int64_t>("width", {}, param_descr_ro);
-  declare_parameter<int64_t>("height", {}, param_descr_ro);
+  const uint32_t w = declare_parameter<int64_t>("width", {}, param_descr_ro);
+  const uint32_t h = declare_parameter<int64_t>("height", {}, param_descr_ro);
+  startup_params.size = {w, h};
 
   // Raw format dimensions
   rcl_interfaces::msg::ParameterDescriptor param_descr_sensor_mode;
   param_descr_sensor_mode.description = "raw mode of the sensor";
   param_descr_sensor_mode.additional_constraints = "string in format [width]:[height]";
   param_descr_sensor_mode.read_only = true;
-  declare_parameter<std::string>("sensor_mode", {}, param_descr_sensor_mode);
+  startup_params.sensor_size =
+    get_sensor_format(declare_parameter<std::string>("sensor_mode", {}, param_descr_sensor_mode));
 
   // camera frame_id
   frame_id = declare_parameter<std::string>("frame_id", "camera", param_descr_ro);
@@ -322,9 +341,10 @@ CameraNode::CameraNode(const rclcpp::NodeOptions &options)
   param_descr_orientation.integer_range.push_back(orientation_range);
   param_descr_orientation.read_only = true;
   constexpr int orientation_angle_default = 0;
-  declare_parameter<int>("orientation", orientation_angle_default, param_descr_orientation);
-#if !LIBCAMERA_VER_GE(0, 2, 0)
-  const int angle = get_parameter("orientation").as_int();
+  const int angle = declare_parameter<int>("orientation", orientation_angle_default, param_descr_orientation);
+#if LIBCAMERA_VER_GE(0, 2, 0)
+  startup_params.orientation = libcamera::orientationFromRotation(angle);
+#else
   if (angle != orientation_angle_default) {
     RCLCPP_WARN_STREAM(get_logger(), "parameter 'orientation' not supported on libcamera " << LIBCAMERA_VERSION_MAJOR << "." << LIBCAMERA_VERSION_MINOR);
   }
@@ -334,14 +354,16 @@ CameraNode::CameraNode(const rclcpp::NodeOptions &options)
   rcl_interfaces::msg::ParameterDescriptor param_descr_camera_info_url;
   param_descr_camera_info_url.description = "camera calibration info file url";
   param_descr_camera_info_url.read_only = true;
-  declare_parameter<std::string>("camera_info_url", {}, param_descr_camera_info_url);
+  startup_params.camera_info_url =
+    declare_parameter<std::string>("camera_info_url", {}, param_descr_camera_info_url);
 
   // camera ID
-  declare_parameter("camera", rclcpp::ParameterValue {}, param_descr_ro.set__dynamic_typing(true));
+  startup_params.camera_id =
+    declare_parameter("camera", rclcpp::ParameterValue {}, param_descr_ro.set__dynamic_typing(true));
 
   // we cannot control the compression rate of the libcamera MJPEG stream
   // ignore "jpeg_quality" parameter for MJPEG streams
-  if (libcamera::PixelFormat::fromString(format) != libcamera::formats::MJPEG) {
+  if (libcamera::PixelFormat::fromString(startup_params.format) != libcamera::formats::MJPEG) {
     rcl_interfaces::msg::ParameterDescriptor jpeg_quality_description;
     jpeg_quality_description.name = "jpeg_quality";
     jpeg_quality_description.type = rcl_interfaces::msg::ParameterType::PARAMETER_INTEGER;
@@ -394,16 +416,14 @@ CameraNode::startCamera()
   if (camera)
     return;
 
-  const std::string format = get_parameter("format").as_string();
-  const libcamera::StreamRole role = get_role(get_parameter("role").as_string());
-  const libcamera::Size size {
-    static_cast<uint32_t>(get_parameter("width").as_int()),
-    static_cast<uint32_t>(get_parameter("height").as_int())};
-  const libcamera::Size sensor_size = get_sensor_format(get_parameter("sensor_mode").as_string());
+  const std::string &format = startup_params.format;
+  const libcamera::StreamRole &role = startup_params.role;
+  const libcamera::Size &size = startup_params.size;
+  const libcamera::Size &sensor_size = startup_params.sensor_size;
 #if LIBCAMERA_VER_GE(0, 2, 0)
-  const libcamera::Orientation orientation = libcamera::orientationFromRotation(static_cast<int>(get_parameter("orientation").as_int()));
+  const libcamera::Orientation &orientation = startup_params.orientation;
 #endif
-  const rclcpp::ParameterValue camera_id = get_parameter("camera").get_parameter_value();
+  const rclcpp::ParameterValue &camera_id = startup_params.camera_id;
 
   // get the camera
   if (!camera_hardware_id.empty()) {
@@ -584,7 +604,7 @@ CameraNode::startCamera()
   if (!cim.setCameraName(cname))
     throw std::runtime_error("camera name must only contain alphanumeric characters");
 
-  const std::string camera_info_url = get_parameter("camera_info_url").as_string();
+  const std::string &camera_info_url = startup_params.camera_info_url;
   if (!cim.loadCameraInfo(camera_info_url)) {
     if (!camera_info_url.empty()) {
       RCLCPP_WARN_STREAM(get_logger(), "failed to load camera calibration info from provided URL, using default URL");
