@@ -426,45 +426,52 @@ CameraNode::startCamera()
   const libcamera::Orientation &orientation = camera_const_parameters.orientation;
 #endif
   const rclcpp::ParameterValue &camera_id = camera_const_parameters.camera_id;
+  const std::string &camera_hardware_id = camera_const_parameters.camera_hardware_id;
 
   // get the camera
-  if (!camera_const_parameters.camera_hardware_id.empty()) {
+  if (!camera_hardware_id.empty()) {
     // reconnect: find the same physical camera by its hardware ID
-    camera = camera_manager.get(camera_const_parameters.camera_hardware_id);
+    camera = camera_manager.get(camera_hardware_id);
     if (!camera) {
       RCLCPP_INFO_STREAM(get_logger(), camera_manager);
-      throw std::runtime_error("camera '" + camera_const_parameters.camera_hardware_id + "' not found");
+      throw std::runtime_error("camera '" + camera_hardware_id + "' not found");
     }
-  }
-  else if (camera_id.get_type() == rclcpp::ParameterType::PARAMETER_NOT_SET) {
-    // use first camera as default
-    camera = camera_manager.cameras().front();
-    RCLCPP_INFO_STREAM(get_logger(), camera_manager);
-    RCLCPP_WARN_STREAM(get_logger(),
-                       "no camera selected, using default: \"" << camera->id() << "\"");
-    RCLCPP_WARN_STREAM(get_logger(), "set parameter 'camera' to silence this warning");
-  }
-  else if (camera_id.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
-    const size_t &id = camera_id.get<rclcpp::ParameterType::PARAMETER_INTEGER>();
-    if (id >= camera_manager.cameras().size()) {
-      RCLCPP_INFO_STREAM(get_logger(), camera_manager);
-      throw std::runtime_error("camera with id " + std::to_string(id) + " does not exist");
-    }
-    camera = camera_manager.cameras().at(id);
-    RCLCPP_DEBUG_STREAM(get_logger(), "found camera by id: " << id);
-  }
-  else if (camera_id.get_type() == rclcpp::ParameterType::PARAMETER_STRING) {
-    const std::string &name = camera_id.get<rclcpp::ParameterType::PARAMETER_STRING>();
-    camera = camera_manager.get(name);
-    if (!camera) {
-      RCLCPP_INFO_STREAM(get_logger(), camera_manager);
-      throw std::runtime_error("camera with name " + name + " does not exist");
-    }
-    RCLCPP_DEBUG_STREAM(get_logger(), "found camera by name: \"" << name << "\"");
   }
   else {
-    RCLCPP_FATAL_STREAM(get_logger(), "unsupported camera parameter type: "
-                                        << rclcpp::to_string(camera_id.get_type()));
+    switch (camera_id.get_type()) {
+    case rclcpp::ParameterType::PARAMETER_NOT_SET:
+      // use first camera as default
+      camera = camera_manager.cameras().front();
+      RCLCPP_INFO_STREAM(get_logger(), camera_manager);
+      RCLCPP_WARN_STREAM(get_logger(),
+                         "no camera selected, using default: \"" << camera->id() << "\"");
+      RCLCPP_WARN_STREAM(get_logger(), "set parameter 'camera' to silence this warning");
+      break;
+    case rclcpp::ParameterType::PARAMETER_INTEGER: {
+      const size_t &id = camera_id.get<rclcpp::ParameterType::PARAMETER_INTEGER>();
+      if (id >= camera_manager.cameras().size()) {
+        RCLCPP_INFO_STREAM(get_logger(), camera_manager);
+        throw std::runtime_error("camera with id " + std::to_string(id) + " does not exist");
+      }
+      camera = camera_manager.cameras().at(id);
+      RCLCPP_DEBUG_STREAM(get_logger(), "found camera by id: " << id);
+      break;
+    }
+    case rclcpp::ParameterType::PARAMETER_STRING: {
+      const std::string &name = camera_id.get<rclcpp::ParameterType::PARAMETER_STRING>();
+      camera = camera_manager.get(name);
+      if (!camera) {
+        RCLCPP_INFO_STREAM(get_logger(), camera_manager);
+        throw std::runtime_error("camera with name " + name + " does not exist");
+      }
+      RCLCPP_DEBUG_STREAM(get_logger(), "found camera by name: \"" << name << "\"");
+      break;
+    }
+    default:
+      RCLCPP_FATAL_STREAM(get_logger(), "unsupported camera parameter type: "
+                                          << rclcpp::to_string(camera_id.get_type()));
+      break;
+    }
   }
 
   if (!camera)
