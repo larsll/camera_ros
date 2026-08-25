@@ -447,7 +447,8 @@ CameraNode::startCamera()
                          "no camera selected, using default: \"" << camera->id() << "\"");
       RCLCPP_WARN_STREAM(get_logger(), "set parameter 'camera' to silence this warning");
       break;
-    case rclcpp::ParameterType::PARAMETER_INTEGER: {
+    case rclcpp::ParameterType::PARAMETER_INTEGER:
+    {
       const size_t &id = camera_id.get<rclcpp::ParameterType::PARAMETER_INTEGER>();
       if (id >= camera_manager.cameras().size()) {
         RCLCPP_INFO_STREAM(get_logger(), camera_manager);
@@ -457,7 +458,8 @@ CameraNode::startCamera()
       RCLCPP_DEBUG_STREAM(get_logger(), "found camera by id: " << id);
       break;
     }
-    case rclcpp::ParameterType::PARAMETER_STRING: {
+    case rclcpp::ParameterType::PARAMETER_STRING:
+    {
       const std::string &name = camera_id.get<rclcpp::ParameterType::PARAMETER_STRING>();
       camera = camera_manager.get(name);
       if (!camera) {
